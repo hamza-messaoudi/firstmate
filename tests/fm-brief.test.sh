@@ -817,6 +817,74 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# --plan is legal only with --scout: a ship brief takes --mode and a secondmate
+# charter is not a report, so both combinations must be refused rather than
+# silently accepted and ignored.
+test_plan_flag_refused_where_it_does_not_apply() {
+  local home out status label args expect
+  home="$TMP_ROOT/plan-refused-home"
+  mkdir -p "$home/data"
+  while IFS='|' read -r label args expect; do
+    [ -n "$label" ] || continue
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" $args 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain why"
+  done <<'ROWS'
+plan without scout|brief-plan-refused-e1 some-proj --plan|--plan applies only to --scout briefs
+plan combined with mode|brief-plan-refused-e2 some-proj --plan --mode direct-PR|--plan applies only to --scout briefs
+plan on a secondmate charter|brief-plan-refused-e3 --secondmate --no-projects --plan|--plan applies only to --scout briefs
+ROWS
+  pass "fm-brief.sh: --plan is refused on ship and secondmate scaffolds"
+}
+
+# The plan variant must add the structured implementation-plan report contract
+# (component blocks with their required fields, an Integration section, and an
+# Open-questions section) while leaving the plain scout scaffold untouched.
+test_plan_scaffold_has_required_report_contract() {
+  local home id brief
+  home="$TMP_ROOT/plan-scaffold-home"
+  mkdir -p "$home/data"
+  id="brief-plan-e4"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout --plan >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "plan scout brief was not scaffolded"
+  assert_grep "## Components" "$brief" "plan scout brief missing the Components section"
+  assert_grep "### <component-id>" "$brief" "plan scout brief missing the per-component block heading"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`summary`' "$brief" "plan scout brief missing the summary field"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`scope`' "$brief" "plan scout brief missing the scope field"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`depends-on`' "$brief" "plan scout brief missing the depends-on field"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`acceptance`' "$brief" "plan scout brief missing the acceptance field"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`tier`' "$brief" "plan scout brief missing the tier field"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`reasoning`, `standard`, `lightweight`' "$brief" "plan scout brief missing the closed tier set"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep '`reason`' "$brief" "plan scout brief missing the reason field"
+  assert_grep "## Integration" "$brief" "plan scout brief missing the Integration section"
+  assert_grep "## Open questions for the captain" "$brief" "plan scout brief missing the Open questions section"
+  assert_grep "file or subsystem overlap alone does not" "$brief" \
+    "plan scout brief did not distinguish a true dependency from file overlap"
+  assert_grep "each component becomes one ship task delivered as its own PR" "$brief" \
+    "plan scout brief did not state the one-component-one-PR contract"
+  assert_grep "you may host the Lavish review loop yourself" "$brief" \
+    "plan scout brief lost the Lavish review permission"
+  assert_grep "commands run, output, file:line references" "$brief" \
+    "plan scout brief lost the free-form evidence contract"
+
+  id="brief-plain-e5"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_no_grep "## Components" "$brief" "plain scout brief unexpectedly received the plan report contract"
+  assert_no_grep "## Open questions for the captain" "$brief" "plain scout brief unexpectedly received the plan report contract"
+  pass "fm-brief.sh: --plan adds the structured component/integration/open-questions report contract"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -890,4 +958,6 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_plan_flag_refused_where_it_does_not_apply
+test_plan_scaffold_has_required_report_contract
 test_scout_and_secondmate_scaffold

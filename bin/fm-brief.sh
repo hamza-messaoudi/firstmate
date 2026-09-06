@@ -13,10 +13,17 @@
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--plan] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
+#   --plan is legal only with --scout (refused with --mode or --secondmate). It adds a
+#   required report contract for a parallel-oriented implementation plan: a `## Components`
+#   section with one `### <component-id>` block per component (summary, scope, depends-on,
+#   acceptance, tier, reason), a `## Integration` section, and a `## Open questions for the
+#   captain` section. The plan-execution skill owns the intake, hold/approve, and dispatch
+#   procedure that consumes this report; this flag only shapes the scout's definition of done.
+#   Omitting --plan leaves the scout scaffold unchanged.
 #   --secondmate writes a persistent secondmate charter. The project list
 #   is cloned into the secondmate home, while the natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
@@ -119,6 +126,7 @@ fi
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+PLAN=0
 MODE=
 MODE_SET=0
 POS=()
@@ -138,6 +146,7 @@ for a in "$@"; do
   case "$a" in
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
+    --plan) PLAN=1 ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
@@ -150,6 +159,13 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+
+# --plan only shapes a scout's definition of done: a ship brief takes --mode
+# and a secondmate charter is not a report, so neither combination is legal.
+if [ "$PLAN" -eq 1 ] && [ "$KIND" != scout ]; then
+  echo "error: --plan applies only to --scout briefs; a ship brief takes --mode and a secondmate charter is not a report" >&2
+  exit 1
+fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -188,6 +204,33 @@ mkdir -p "$DATA/$ID"
 ASK_USER_BLOCK=
 if [ "$KIND" = ship ] && [ "$MODE" = no-mistakes ]; then
   ASK_USER_BLOCK=$(fm_ask_user_escalation_block "$DATA" "$ID")
+fi
+
+# The scout report-contract paragraph. --plan appends a required structured-plan
+# addendum; omitting --plan leaves this identical to the historical scout text so
+# the plain scout scaffold stays byte-for-byte unchanged.
+IFS= read -r -d '' SCOUT_REPORT_CONTRACT <<EOF || true
+Write your findings to \`$DATA/$ID/report.md\`.
+The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+EOF
+SCOUT_REPORT_CONTRACT=${SCOUT_REPORT_CONTRACT%$'\n'}
+if [ "$PLAN" -eq 1 ]; then
+IFS= read -r -d '' PLAN_ADDENDUM <<'EOF' || true
+This is a PLANNING scout: your report must also carry a structured, parallel-oriented implementation plan alongside your free-form evidence.
+Components must be independently implementable and validatable in separate worktrees: a true semantic dependency goes in `depends-on`, file or subsystem overlap alone does not, and each component becomes one ship task delivered as its own PR.
+Add a `## Components` section with one `### <component-id>` block per component, each carrying exactly these fields as list items:
+- `summary`: what this component builds.
+- `scope`: the files, subsystems, or interfaces this component owns.
+- `depends-on`: other component ids this one requires landed first, or `none`.
+- `acceptance`: how a reviewer verifies this component is done.
+- `tier`: one of `reasoning`, `standard`, `lightweight`.
+- `reason`: why this component needs that tier.
+Add a `## Integration` section describing what must land first and how the components come together into the whole.
+Add a `## Open questions for the captain` section listing anything the captain must decide or approve before or during execution.
+EOF
+PLAN_ADDENDUM=${PLAN_ADDENDUM%$'\n'}
+SCOUT_REPORT_CONTRACT="$SCOUT_REPORT_CONTRACT
+$PLAN_ADDENDUM"
 fi
 
 shell_quote() {
@@ -405,14 +448,17 @@ The report is the only thing that survives, so anything worth keeping must be in
 $INBOX_SECTION
 
 # Definition of done
-Write your findings to \`$DATA/$ID/report.md\`.
-The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+$SCOUT_REPORT_CONTRACT
 If your deliverable is a visual artifact the captain will review and iterate on, you may host the Lavish review loop yourself (poll, revise, re-serve, staying alive) instead of handing it back to firstmate.
 Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
-echo "scaffolded: $BRIEF (scout; replace {TASK} and {FIRSTMATE_SPEC})"
+if [ "$PLAN" -eq 1 ]; then
+  echo "scaffolded: $BRIEF (scout plan; replace {TASK} and {FIRSTMATE_SPEC})"
+else
+  echo "scaffolded: $BRIEF (scout; replace {TASK} and {FIRSTMATE_SPEC})"
+fi
 exit 0
 fi
 
