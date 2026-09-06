@@ -40,6 +40,9 @@ Components may be dispatched only after this call succeeds.
 
 ## 5. Map to executors
 
+Run `bin/fm-plan-dispatch.sh <plan-id> --project <repo> --mode <mode> --yolo <on|off>` to create every component task and filled brief from the approved report, block the plan by those components, and print tier-grouped spawn suggestions.
+Its header owns parsing, approval proof, and printed-command mechanics.
+
 For each approved component:
 
 1. File a backlog item with `tasks-axi add <plan-id>-<component-id> "<summary>" --kind ship --repo <repo>`, translating that component's `depends-on` ids into task ids and passing each one as its own `--blocked-by <id>` flag (`none` means no `--blocked-by` at all).
