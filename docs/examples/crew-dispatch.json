@@ -17,6 +17,11 @@
         { "harness": "codex", "model": "gpt-5.5", "effort": "high" }
       ],
       "why": "Use a strong coding profile for big, ambiguous work; resolve the alternatives through quota-array-dispatch."
+    },
+    {
+      "when": "The task is turning a raw goal into a structured, parallel-oriented implementation plan for the captain to review and approve.",
+      "use": { "harness": "codex", "effort": "xhigh" },
+      "why": "Planning work is design-heavy and ambiguity-tolerant, so give it a strong reasoning effort without pinning a specific model."
     }
   ],
   "default": [
