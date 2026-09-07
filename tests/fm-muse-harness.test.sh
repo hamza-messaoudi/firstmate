@@ -25,6 +25,130 @@ TEARDOWN="$ROOT/bin/fm-teardown.sh"
 HARNESS="$ROOT/bin/fm-harness.sh"
 TMP_ROOT=$(fm_test_tmproot fm-muse-harness)
 
+# Process ancestry is a kernel-facing contract, so these cases need a real
+# executable rather than a copied shell.  A shell can tail-exec its final
+# command, silently removing the renamed parent the test intends to inspect.
+# `cc` is available on the macOS and Linux GitHub runners that run this
+# portable suite (as it is for the Cursor ancestry fixture).
+MUSE_FIXTURE_CC=$(command -v cc 2>/dev/null || command -v gcc 2>/dev/null || true)
+[ -n "$MUSE_FIXTURE_CC" ] || fail "a C compiler (cc or gcc) is required for the Muse executable ancestry fixture"
+
+make_muse_ancestry_fixture() {  # <output-executable>
+  local output=$1 source
+  source="$TMP_ROOT/muse-ancestry-fixture.c"
+  cat > "$source" <<'C'
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  const char *launch = getenv("MUSE_FIXTURE_LAUNCH");
+  FILE *launch_file;
+  int status;
+  pid_t child;
+
+  if (argc != 3 || strcmp(argv[1], "-c") != 0) return 64;
+  if (launch != NULL && launch[0] != '\0') {
+    launch_file = fopen(launch, "w");
+    if (launch_file == NULL) return 66;
+    fprintf(launch_file, "parent-pid=%ld\n", (long)getpid());
+    fclose(launch_file);
+  }
+
+  child = fork();
+  if (child < 0) return 70;
+  if (child == 0) {
+    execl("/bin/bash", "bash", "-c", argv[2], (char *)0);
+    _exit(127);
+  }
+  while (waitpid(child, &status, 0) < 0) {
+    if (errno != EINTR) return 71;
+  }
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+  return 72;
+}
+C
+  "$MUSE_FIXTURE_CC" -o "$output" "$source" \
+    || fail "could not build the Muse executable ancestry fixture with $MUSE_FIXTURE_CC"
+}
+
+# run_muse_ancestry_fixture <renamed-executable> <launch-sentinel> <probe-trace>
+# The child records the actual ps values while its named parent is waiting.
+# Keeping work after the harness probe prevents bash from tail-execing the
+# probe and makes an absent parent a fixture failure rather than a false pass.
+run_muse_ancestry_fixture() {
+  local executable=$1 launch=$2 trace=$3 status
+  if [ ! -x "$executable" ]; then
+    printf 'fixture infrastructure failure: executable is unavailable: %s\n' "$executable" >&2
+    return 125
+  fi
+  # shellcheck disable=SC2016 # The child shell expands its probe environment.
+  env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
+    MUSE_FIXTURE_LAUNCH="$launch" MUSE_FIXTURE_TRACE="$trace" \
+    MUSE_FIXTURE_PROBE="$HARNESS" \
+    "$executable" -c '
+      probe=$($MUSE_FIXTURE_PROBE)
+      probe_status=$?
+      child_pid=$$
+      parent_pid=$(ps -o ppid= -p "$child_pid" 2>/dev/null | tr -d "[:space:]")
+      child_comm=$(ps -o comm= -p "$child_pid" 2>/dev/null | tr -d "[:space:]")
+      parent_comm=$(ps -o comm= -p "$parent_pid" 2>/dev/null | tr -d "[:space:]")
+      printf "probe=%s\nprobe-status=%s\nchild-pid=%s\nparent-pid=%s\nchild-comm=%s\nparent-comm=%s\n" \
+        "$probe" "$probe_status" "$child_pid" "$parent_pid" "$child_comm" "$parent_comm" > "$MUSE_FIXTURE_TRACE"
+      printf "%s" "$probe"
+      exit "$probe_status"
+    '
+  status=$?
+  if [ "$status" -ne 0 ] && { [ ! -f "$launch" ] || [ ! -s "$launch" ]; }; then
+    printf 'fixture infrastructure failure: executable launch failed with status %s: %s\n' \
+      "$status" "$executable" >&2
+    return 125
+  fi
+  return "$status"
+}
+
+muse_fixture_value() {  # <trace> <key>
+  sed -n "s/^$2=//p" "$1"
+}
+
+assert_muse_ancestry_fixture() {  # <bin-name> <launch-sentinel> <probe-trace>
+  local bin=$1 launch=$2 trace=$3 launch_parent trace_parent parent_comm parent_name child_comm child_name
+  [ -s "$launch" ] || fail "Muse fixture '$bin' launched without its parent sentinel"
+  [ -s "$trace" ] || fail "Muse fixture '$bin' completed without its probe sentinel"
+  launch_parent=$(muse_fixture_value "$launch" parent-pid)
+  trace_parent=$(muse_fixture_value "$trace" parent-pid)
+  parent_comm=$(muse_fixture_value "$trace" parent-comm)
+  child_comm=$(muse_fixture_value "$trace" child-comm)
+  [ -n "$launch_parent" ] || fail "Muse fixture '$bin' launch sentinel omitted the parent pid"
+  [ "$launch_parent" = "$trace_parent" ] \
+    || fail "Muse fixture '$bin' probe saw parent '$trace_parent', expected launched parent '$launch_parent'"
+  [ -n "$child_comm" ] || fail "Muse fixture '$bin' probe could not read its child ps comm"
+  child_name=$(basename -- "$child_comm")
+  [ "$child_name" = bash ] \
+    || fail "Muse fixture '$bin' child ps comm was '$child_comm', expected bash"
+  [ -n "$parent_comm" ] || fail "Muse fixture '$bin' probe could not read its parent ps comm"
+  # macOS reports this native executable as its full path while Linux reports
+  # its basename. Record and require the real ps value above, then apply the
+  # same basename normalization production detection uses.
+  parent_name=$(basename -- "$parent_comm")
+  case "$bin" in
+    muse) [ "$parent_name" = muse ] \
+      || fail "Muse fixture '$bin' parent ps comm was '$parent_comm', expected basename muse" ;;
+    muse-bin-*) case "$parent_name" in
+      muse-bin-*) ;;
+      *) fail "Muse fixture '$bin' parent ps comm was '$parent_comm', expected basename muse-bin-*" ;;
+    esac ;;
+    *) [ "$parent_name" = "$bin" ] \
+      || fail "Muse fixture '$bin' parent ps comm was '$parent_comm', expected basename '$bin'" ;;
+  esac
+}
+
 # --- session-log fixtures ---------------------------------------------------
 
 # muse_log_metadata <workspace-root>: the first record of every session log,
@@ -104,7 +228,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  cp "$(command -v bash)" "$fakebin/muse-bin-test-version"
+  make_muse_ancestry_fixture "$fakebin/muse-bin-test-version"
   cat > "$fakebin/muse" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -177,14 +301,21 @@ run_muse_spawn() {  # <home> <proj> <wt> <fakebin> <id> [extra args...]
 # name the walk is supposed to find. Real muse keeps its TUI process alive and
 # runs tools as children, so forcing a fork is what reproduces that shape.
 test_detects_versioned_process_ancestor() {
-  local dir bin out
+  local dir fixture bin launch trace out status
   dir="$TMP_ROOT/detect"
   mkdir -p "$dir"
+  fixture="$dir/muse-fixture"
+  make_muse_ancestry_fixture "$fixture"
   for bin in muse-bin-0.1.0-R708.1 muse-bin-9.9.9-RZZZ.9 muse; do
-    cp "$(command -v bash)" "$dir/$bin"
-    out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
-      -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
-      "$dir/$bin" -c "r=\$(\"$HARNESS\"); printf '%s' \"\$r\"")
+    cp "$fixture" "$dir/$bin"
+    launch="$dir/$bin.launch"
+    trace="$dir/$bin.trace"
+    out=$(run_muse_ancestry_fixture "$dir/$bin" "$launch" "$trace")
+    status=$?
+    expect_code 0 "$status" "Muse fixture '$bin' should launch and complete: $out"
+    assert_muse_ancestry_fixture "$bin" "$launch" "$trace"
+    [ "$(muse_fixture_value "$trace" probe-status)" = 0 ] \
+      || fail "Muse fixture '$bin' harness probe failed after launch"
     [ "$out" = muse ] || fail "fm-harness.sh under process '$bin' reported '$out', expected muse"
   done
   pass "muse is detected through any versioned muse-bin ancestor"
@@ -193,17 +324,43 @@ test_detects_versioned_process_ancestor() {
 # The match must be anchored: an unrelated command whose name merely CONTAINS
 # muse is a different program and must not be claimed by this adapter.
 test_detection_is_anchored() {
-  local dir bin out
+  local dir fixture bin launch trace out status
   dir="$TMP_ROOT/detect-neg"
   mkdir -p "$dir"
+  fixture="$dir/muse-fixture"
+  make_muse_ancestry_fixture "$fixture"
   for bin in musescore amuse notmuse-bin muse-binary muse-bind; do
-    cp "$(command -v bash)" "$dir/$bin"
-    out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
-      -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
-      "$dir/$bin" -c "r=\$(\"$HARNESS\"); printf '%s' \"\$r\"")
+    cp "$fixture" "$dir/$bin"
+    launch="$dir/$bin.launch"
+    trace="$dir/$bin.trace"
+    out=$(run_muse_ancestry_fixture "$dir/$bin" "$launch" "$trace")
+    status=$?
+    expect_code 0 "$status" "Muse decoy fixture '$bin' should launch and complete: $out"
+    assert_muse_ancestry_fixture "$bin" "$launch" "$trace"
+    [ "$(muse_fixture_value "$trace" probe-status)" = 0 ] \
+      || fail "Muse decoy fixture '$bin' harness probe failed after launch"
     [ "$out" != muse ] || fail "fm-harness.sh misdetected unrelated process '$bin' as muse"
   done
   pass "muse detection does not claim unrelated muse-containing commands"
+}
+
+test_detection_fixture_launch_failure_is_infrastructure_failure() {
+  local dir fixture launch trace out status
+  dir="$TMP_ROOT/detect-launch-failure"
+  mkdir -p "$dir"
+  fixture="$dir/muse-fixture"
+  make_muse_ancestry_fixture "$fixture"
+  launch="$dir/launch-directory"
+  trace="$dir/trace"
+  mkdir "$launch"
+  out=$(run_muse_ancestry_fixture "$fixture" "$launch" "$trace" 2>&1)
+  status=$?
+  expect_code 125 "$status" "a failed Muse fixture launch must fail as infrastructure"
+  assert_contains "$out" 'fixture infrastructure failure: executable launch failed with status 66' \
+    "a failed Muse fixture launch did not name the infrastructure failure"
+  [ ! -e "$trace" ] \
+    || fail "a failed Muse fixture launch wrote a probe sentinel"
+  pass "Muse fixture launch failure cannot pass as an empty detection result"
 }
 
 test_spawn_clears_inherited_foreign_harness_markers() {
@@ -941,9 +1098,10 @@ EOF
 }
 
 test_spawn_environment_allowlist_credential_preflight
+test_spawn_clears_inherited_foreign_harness_markers
 test_detects_versioned_process_ancestor
 test_detection_is_anchored
-test_spawn_clears_inherited_foreign_harness_markers
+test_detection_fixture_launch_failure_is_infrastructure_failure
 test_spawn_launch_shape
 test_spawn_maps_effort_and_model
 test_spawn_refuses_without_credential
