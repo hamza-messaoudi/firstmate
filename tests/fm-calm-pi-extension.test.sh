@@ -28,6 +28,32 @@ record_pi_version_evidence() {
   [ -n "$version" ] || fail "$context could not determine the installed Pi version"
 }
 
+# Pi 0.85 nests these runtime dependencies inside its package, while the isolated
+# 0.84.4 package resolves them alongside it.  Resolve through Node exactly as Pi's
+# extension loader does instead of assuming either package layout.
+pi_dependency_dir() {
+  node - "$1" "$PI_PACKAGE_DIR" <<'NODE'
+const [name, packageRoot] = process.argv.slice(2);
+const { dirname, join } = require("node:path");
+const { existsSync } = require("node:fs");
+let directory = dirname(require.resolve(name, { paths: [packageRoot] }));
+while (!existsSync(join(directory, "package.json"))) {
+  const parent = dirname(directory);
+  if (parent === directory) throw new Error(`package root not found for ${name}`);
+  directory = parent;
+}
+console.log(directory);
+NODE
+}
+
+link_pi_runtime_dependencies() {
+  local destination=$1 pi_tui typebox
+  pi_tui=$(pi_dependency_dir "@earendil-works/pi-tui") || return 1
+  typebox=$(pi_dependency_dir "typebox") || return 1
+  ln -s "$pi_tui" "$destination/@earendil-works/pi-tui"
+  ln -s "$typebox" "$destination/typebox"
+}
+
 cleanup() {
   if command -v tmux >/dev/null 2>&1; then
     tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
@@ -97,8 +123,7 @@ test_home_resolution() {
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
-  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
-  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/project/node_modules/typebox"
+  link_pi_runtime_dependencies "$fixture/project/node_modules" || fail "Pi runtime dependencies could not resolve"
   printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
 
   out=$(cd "$fixture/launch-cwd" && \
@@ -219,8 +244,7 @@ test_pi_compat_degraded_adapter() {
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
-  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
-  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/project/node_modules/typebox"
+  link_pi_runtime_dependencies "$fixture/project/node_modules" || fail "Pi runtime dependencies could not resolve"
   printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
 
   out=$(cd "$fixture/project" && \
@@ -378,8 +402,7 @@ test_builtin_gate_load_time() {
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
-  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
-  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/project/node_modules/typebox"
+  link_pi_runtime_dependencies "$fixture/project/node_modules" || fail "Pi runtime dependencies could not resolve"
   printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
   printf '%s\n' on >"$fixture/home-on/config/calm"
 
@@ -464,8 +487,7 @@ test_calm_activation_collision_and_regression_bound() {
   cp "$WORKING_SHIP" "$fixture/project/.pi/extensions/lib/fm-calm-working-ship.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/project/.pi/extensions/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/project/node_modules/@earendil-works/pi-coding-agent"
-  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/project/node_modules/@earendil-works/pi-tui"
-  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/project/node_modules/typebox"
+  link_pi_runtime_dependencies "$fixture/project/node_modules" || fail "Pi runtime dependencies could not resolve"
   printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
   printf '%s\n' 'export default function () {}' >"$fixture/project/foreign-bash-extension.ts"
 
@@ -484,7 +506,7 @@ const { ToolExecutionComponent } = await import(
 );
 const { initTheme } = await import(pathToFileURL(`${packageRoot}/dist/modes/interactive/theme/theme.js`).href);
 const { setCapabilities } = await import(
-  pathToFileURL(`${packageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`).href
+  "@earendil-works/pi-tui"
 );
 initTheme("dark");
 setCapabilities({ images: null, trueColor: true, hyperlinks: false });
@@ -681,8 +703,7 @@ test_rendering_and_session_lifecycle() {
   cp "$ROOT/.pi/extensions/lib/fm-async-exec.ts" "$fixture/lib/fm-async-exec.ts"
   cp "$WATCH_EXT" "$fixture/fm-primary-pi-watch.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
-  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
-  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/node_modules/typebox"
+  link_pi_runtime_dependencies "$fixture/node_modules" || fail "Pi runtime dependencies could not resolve"
   printf '%s\n' '{"type":"module"}' >"$fixture/package.json"
   cat >"$fixture/operational-input-probe.sh" <<'SH'
 #!/usr/bin/env bash
@@ -703,15 +724,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const extPath = fileURLToPath(pathToFileURL(process.env.EXT).href);
 
 const packageRoot = process.env.PI_PACKAGE_DIR;
-const [{ AssistantMessageComponent }, { CustomEntryComponent }, { ToolExecutionComponent }, { UserMessageComponent }, { InteractiveMode }, { initTheme, theme }, { Text, getKeybindings, setCapabilities }, { createToolHtmlRenderer }] = await Promise.all([
+const piVersion = JSON.parse(readFileSync(`${packageRoot}/package.json`, "utf8")).version;
+const [{ AssistantMessageComponent }, { CustomEntryComponent }, { ToolExecutionComponent }, { UserMessageComponent }, { InteractiveMode }, { initTheme, theme }, { Text, getKeybindings, setCapabilities }, { createToolHtmlRenderer }, builtInFactories] = await Promise.all([
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/components/assistant-message.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/components/custom-entry.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/components/tool-execution.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/components/user-message.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/interactive-mode.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/theme/theme.js`).href),
-  import(pathToFileURL(`${packageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`).href),
+  import("@earendil-works/pi-tui"),
   import(pathToFileURL(`${packageRoot}/dist/core/export-html/tool-renderer.js`).href),
+  import(pathToFileURL(`${packageRoot}/dist/index.js`).href),
 ]);
 initTheme("dark");
 setCapabilities({ images: null, trueColor: true, hyperlinks: false });
@@ -884,28 +907,61 @@ const cases = [
   ["find", { pattern: "*.txt", path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
   ["ls", { path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
 ];
+const stockDefinitionFactories = {
+  read: builtInFactories.createReadToolDefinition,
+  bash: builtInFactories.createBashToolDefinition,
+  edit: builtInFactories.createEditToolDefinition,
+  write: builtInFactories.createWriteToolDefinition,
+  grep: builtInFactories.createGrepToolDefinition,
+  find: builtInFactories.createFindToolDefinition,
+  ls: builtInFactories.createLsToolDefinition,
+};
 const renderUi = { requestRender() {} };
 const rows = [];
 for (const [name, args, result] of cases) {
   const wrapped = tools.find((tool) => tool.name === name);
-  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, undefined, renderUi, process.cwd());
+  // InteractiveMode resolves each built-in to its ToolDefinition before constructing
+  // a ToolExecutionComponent.  Passing undefined takes Pi's generic fallback branch
+  // instead, which stopped resembling the built-in path in 0.85.1.  Keep that stale
+  // reference beside the real definition to falsify a Calm-adapter regression: only
+  // the definition changes between these two stock rows.
+  const stockDefinition = stockDefinitionFactories[name](process.cwd());
+  const undefinedReference = new ToolExecutionComponent(
+    name,
+    `undefined-reference-${name}`,
+    args,
+    { showImages: false },
+    undefined,
+    renderUi,
+    process.cwd(),
+  );
+  const baseline = new ToolExecutionComponent(name, `stock-${name}`, args, { showImages: false }, stockDefinition, renderUi, process.cwd());
   const actual = new ToolExecutionComponent(name, `wrapped-${name}`, args, { showImages: false }, wrapped, renderUi, process.cwd());
-  for (const row of [baseline, actual]) {
+  for (const row of [undefinedReference, baseline, actual]) {
     row.markExecutionStarted();
     row.setArgsComplete();
     row.updateResult(result);
   }
+  const undefinedCollapsed = undefinedReference.render(100);
   const collapsedExpected = baseline.render(100);
   const collapsedActual = actual.render(100);
   if (JSON.stringify(collapsedActual) !== JSON.stringify(collapsedExpected)) {
-    throw new Error(`${name} collapsed rendering changed while calm mode was off`);
+    throw new Error(`${name} collapsed stock/Calm mismatch: ${JSON.stringify({ undefinedReference: undefinedCollapsed, stock: collapsedExpected, calm: collapsedActual })}`);
   }
+  undefinedReference.setExpanded(true);
   baseline.setExpanded(true);
   actual.setExpanded(true);
+  const undefinedExpanded = undefinedReference.render(100);
   const expandedExpected = baseline.render(100);
   const expandedActual = actual.render(100);
   if (JSON.stringify(expandedActual) !== JSON.stringify(expandedExpected)) {
-    throw new Error(`${name} expanded rendering changed while calm mode was off`);
+    throw new Error(`${name} expanded stock/Calm mismatch: ${JSON.stringify({ undefinedReference: undefinedExpanded, stock: expandedExpected, calm: expandedActual })}`);
+  }
+  // 0.85.1's generic fallback is intentionally not a stock built-in renderer.  This
+  // assertion keeps that divergent reference observable without turning a future
+  // version's implementation detail into an unsupported upper-version gate.
+  if (name === "read" && piVersion === "0.85.1" && JSON.stringify(undefinedCollapsed) === JSON.stringify(collapsedExpected)) {
+    throw new Error("Pi 0.85.1 undefined reference no longer exercises the generic fallback branch");
   }
   rows.push({ name, baseline, actual });
 }
@@ -1380,8 +1436,7 @@ test_calm_mid_turn_working_notes() {
   cp "$WORKING_SHIP" "$fixture/lib/fm-calm-working-ship.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
-  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
-  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/node_modules/typebox"
+  link_pi_runtime_dependencies "$fixture/node_modules" || fail "Pi runtime dependencies could not resolve"
   printf '%s\n' '{"type":"module"}' >"$fixture/package.json"
 
   output_file="$fixture/node-output"
@@ -1393,7 +1448,7 @@ const packageRoot = process.env.PI_PACKAGE_DIR;
 const [{ AssistantMessageComponent }, { initTheme }, { setCapabilities }] = await Promise.all([
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/components/assistant-message.js`).href),
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/theme/theme.js`).href),
-  import(pathToFileURL(`${packageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`).href),
+  import("@earendil-works/pi-tui"),
 ]);
 initTheme("dark");
 setCapabilities({ images: null, trueColor: true, hyperlinks: false });
@@ -2235,8 +2290,7 @@ test_working_ship_geometry_and_lifecycle() {
   cp "$WORKING_SHIP" "$fixture/lib/fm-calm-working-ship.ts"
   cp "$PI_OPERATIONAL_INPUT" "$fixture/lib/fm-operational-input.ts"
   ln -s "$PI_PACKAGE_DIR" "$fixture/node_modules/@earendil-works/pi-coding-agent"
-  ln -s "$PI_PACKAGE_DIR/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
-  ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/node_modules/typebox"
+  link_pi_runtime_dependencies "$fixture/node_modules" || fail "Pi runtime dependencies could not resolve"
   printf '%s\n' '{"type":"module"}' >"$fixture/package.json"
 
   out=$(cd "$fixture" && EXT="$fixture/fm-calm.ts" FM_HOME="$fixture/home" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" node --input-type=module 2>&1 <<'JS'
@@ -2245,7 +2299,7 @@ import { pathToFileURL } from "node:url";
 const packageRoot = process.env.PI_PACKAGE_DIR;
 const [{ initTheme, theme }, { visibleWidth, setCapabilities }] = await Promise.all([
   import(pathToFileURL(`${packageRoot}/dist/modes/interactive/theme/theme.js`).href),
-  import(pathToFileURL(`${packageRoot}/node_modules/@earendil-works/pi-tui/dist/index.js`).href),
+  import("@earendil-works/pi-tui"),
 ]);
 initTheme("dark");
 setCapabilities({ images: null, trueColor: true, hyperlinks: false });
