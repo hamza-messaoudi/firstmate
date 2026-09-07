@@ -540,3 +540,37 @@ FM_TEST_END 2026-08-29T01:01:30Z tests/fm-pi-branch-extension.test.sh exit=0 dur
 ```
 
 The real renderer comparison exercised twelve outcome lines and reported collapsed and expanded parity with Pi stock, zero visible rows under Calm, restored stock parity after toggling Calm off, and delegated stock HTML export fallback.
+
+## 2026-09-07 Pi 0.84.4 and 0.85.1 Calm renderer compatibility verification
+
+Pi 0.85.1 changed the `ToolExecutionComponent` branch reached when its definition argument is `undefined`.
+That branch uses Pi's generic fallback shell, including serialized arguments and result text, rather than the built-in renderer that `InteractiveMode` resolves for a real `read` tool row.
+The former fixture compared Calm's real wrapped definition with that fallback, so its first 0.85.1 failure was a reference-fixture mismatch rather than a Calm adapter divergence.
+
+The repaired fixture constructs the stock reference through the same built-in definition factories Pi resolves for interactive tool rows and keeps the old `undefined` row as a version-labelled counterfactual.
+With identical tool name, arguments, result, width, and lifecycle state, changing only that definition makes the 0.85.1 fallback diverge while the resolved stock and Calm-wrapped ANSI rows agree at both collapsed and expanded widths for all seven built-ins.
+Pi 0.84.4's `undefined` read reference still matches its resolved stock renderer, so it does not expose the stale-fixture defect, while the corrected stock-versus-Calm comparison also passes there.
+No adapter change was necessary.
+
+The isolated 0.84.4 package was installed beneath the disposable worktree and selected only with `FM_PI_PACKAGE_DIR`; the global Pi 0.85.1 installation was not replaced.
+The fixture and strict typecheck resolve Pi's own dependencies through the package's Node resolution ancestry, because 0.85.1 nests them below the Pi package while the isolated 0.84.4 runtime places them alongside it.
+
+```text
+$ bin/fm-test-run.sh tests/fm-calm-pi-extension.test.sh
+... Pi 0.85.1 renderer/lifecycle contract passed, including all seven stock-versus-Calm rows
+
+$ FM_PI_PACKAGE_DIR=<isolated 0.84.4 package> bin/fm-test-run.sh tests/fm-calm-pi-extension.test.sh
+... Pi 0.84.4 renderer/lifecycle contract passed before the unrelated operational follow-up case reported a duplicate captain answer
+
+$ npm exec --yes --package=typescript@5.9.3 -- bash tests/fm-pi-primary-types.test.sh
+ok - tracked Pi extensions pass strict no-emit typecheck against Pi 0.85.1
+
+$ FM_PI_PACKAGE_DIR=<isolated 0.84.4 package> npm exec --yes --package=typescript@5.9.3 -- bash tests/fm-pi-primary-types.test.sh
+ok - tracked Pi extensions pass strict no-emit typecheck against Pi 0.84.4
+```
+
+The full 0.84.4 suite's later operational-follow-up coverage is unavailable as a compatibility pass because that pre-existing scenario duplicates a captain answer on 0.84.4.
+It is recorded here as unavailable coverage, not as a successful full-suite result.
+The installed-runtime live Pi guard was run on Pi 0.85.1, but it is unavailable as compatibility-pass evidence because its later-message setup failed to preserve the genuine captain boundary after the session-start hook confirmed `SESSION_START_DONE count=1`.
+That result is recorded as unavailable coverage, not a successful live-user verification.
+The refresh command remains `FM_PI_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-pi-primary-live-e2e.test.sh`.
