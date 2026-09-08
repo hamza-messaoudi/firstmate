@@ -40,17 +40,14 @@ Components may be dispatched only after this call succeeds.
 
 ## 5. Map to executors
 
-For each approved component:
+Run `bin/fm-plan-dispatch.sh <plan-id> --project <repo> --mode <mode> --yolo <on|off>` to create every component task and filled brief from the approved report, block the plan by those components, and print tier-grouped spawn suggestions.
+Its header owns parsing, approval proof, and printed-command mechanics: task filing (translating each component's `depends-on` into `--blocked-by` task ids, dependencies before dependents), brief scaffolding with the captain's intent and that component's spec filled in, and blocking the plan task by every component so it stays out of `tasks-axi ready` until the last one lands.
 
-1. File a backlog item with `tasks-axi add <plan-id>-<component-id> "<summary>" --kind ship --repo <repo>`, translating that component's `depends-on` ids into task ids and passing each one as its own `--blocked-by <id>` flag (`none` means no `--blocked-by` at all).
-   File components in dependency order, dependencies before dependents, because `--blocked-by` refuses an id that does not exist yet.
-2. Scaffold its ship brief with `bin/fm-brief.sh`, using the project's resolved `--mode` (`AGENTS.md` section 7).
-   Its `## Captain's intent` carries the captain's original goal plus their recorded approval words; its `## Firstmate spec` carries that component's block verbatim plus the integration notes that concern it.
-3. Resolve a concrete harness/model/effort for the component through the dispatch-profile contract in `AGENTS.md` section 4 and `docs/configuration.md`, using the component's `tier` only as a routing hint: `reasoning` favors the strongest configured profile, `standard` the default profile, `lightweight` the cheapest configured profile.
+For each approved component, using the printed suggestions as a starting point:
+
+1. Resolve a concrete harness/model/effort for the component through the dispatch-profile contract in `AGENTS.md` section 4 and `docs/configuration.md`, using the component's `tier` only as a routing hint: `reasoning` favors the strongest configured profile, `standard` the default profile, `lightweight` the cheapest configured profile.
    `tier` is never schema the scripts read - firstmate's judgment applies it.
-4. Spawn with `bin/fm-spawn.sh` batch pairs (`id=repo` per component), grouped so every pair sharing one fully resolved profile (harness, model, and effort) ships in the same batch call, because a batch's shared `--harness/--model/--effort` apply to every pair in it; each batch carries the project's resolved `--mode` and `--yolo`.
-
-Once every component is filed, block the plan task by each of them with `tasks-axi block <plan-id> --by <plan-id>-<component-id>`, so the plan task stays out of `tasks-axi ready` until its last component lands.
+2. Spawn with `bin/fm-spawn.sh` batch pairs (`id=repo` per component), grouped so every pair sharing one fully resolved profile (harness, model, and effort) ships in the same batch call, because a batch's shared `--harness/--model/--effort` apply to every pair in it; each batch carries the project's resolved `--mode` and `--yolo`.
 
 Every approved component ships as its own PR - never an integration branch or a combined PR - so nothing here builds one.
 
