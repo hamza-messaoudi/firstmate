@@ -101,7 +101,29 @@
 #     `close-tab-by-id`, which verified cleanly removes a live tab (pane and
 #     all) in one call - never a separate close-pane first.
 #
-# Requires: zellij (CLI), jq (JSON parsing). Bootstrap detects these through
+#   Regression found against real zellij 0.45.1 (macOS x86_64, 2026-09-08),
+#   past the 0.44.0 empirical baseline above:
+#   - 0.45.0's "Per-Client Tab Sizes" change (upstream changelog) means a
+#     tab's viewport comes ONLY from clients currently viewing it. `new-tab`
+#     in a session with ZERO attached clients creates a tab with viewport
+#     0x0, and NO terminal pane is ever spawned for it - `list-panes` never
+#     reports one for that tab id, so fm_backend_zellij_pane_for_tab returns
+#     empty and task creation fails outright. The session's own FIRST tab
+#     (made by `attach -b` at session-creation time, before this adapter ever
+#     calls `new-tab`) is unaffected: it keeps the real size that command's
+#     own brief connection gave it. Verified fix: having ANY client actually
+#     attached (even non-interactively, via a real pty) when `new-tab` runs
+#     is enough - the new tab then gets a real size and a real terminal
+#     pane, whether or not that client is the one `new-tab` focuses.
+#     fm_backend_zellij_keepalive_ensure keeps exactly one such client
+#     attached per session, spawned through `script` because `zellij attach`
+#     exits immediately with no pty (verified: backgrounded with stdin from
+#     /dev/null and no controlling terminal, it has no effect on the
+#     session at all). Called from fm_backend_zellij_container_ensure, so
+#     every spawn path already covers it.
+#
+# Requires: zellij (CLI), jq (JSON parsing), script (real-pty wrapper for the
+# keepalive client above). Bootstrap detects these through
 # fm_backend_required_tools only when zellij is the resolved backend; this
 # adapter also gates them again before spawning.
 
@@ -166,10 +188,14 @@ fm_backend_zellij_scoped_title() {  # <fm-task-label>
   printf 'fm-%s-%s' "$home" "$rest"
 }
 
-# fm_backend_zellij_tool_check: refuse loudly if zellij or jq is missing.
+# fm_backend_zellij_tool_check: refuse loudly if zellij, jq, or script is
+# missing. `script` wraps the keepalive client's real pty
+# (fm_backend_zellij_keepalive_ensure); without it, task creation fails on
+# zellij 0.45.0+ (see the header's "Regression found" note).
 fm_backend_zellij_tool_check() {
   command -v zellij >/dev/null 2>&1 || { echo "error: backend=zellij selected but the 'zellij' CLI is not installed (https://zellij.dev)" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || { echo "error: backend=zellij selected but 'jq' is not installed (required to parse zellij's JSON output)" >&2; return 1; }
+  command -v script >/dev/null 2>&1 || { echo "error: backend=zellij selected but 'script' is not installed (required to keep a real terminal client attached for task creation)" >&2; return 1; }
   return 0
 }
 
@@ -245,14 +271,52 @@ fm_backend_zellij_server_ensure() {  # <session>
   return 1
 }
 
+# fm_backend_zellij_keepalive_attached: true (rc 0) when at least one client
+# - a real captain attach or this adapter's own keepalive - is currently
+# attached to <session>. `action list-clients` always prints a header row;
+# a session with zero attached clients prints exactly that one line.
+fm_backend_zellij_keepalive_attached() {  # <session>
+  local session=$1 lines
+  lines=$(fm_backend_zellij_cli "$session" action list-clients 2>/dev/null | grep -c .)
+  [ "${lines:-0}" -gt 1 ]
+}
+
+# fm_backend_zellij_keepalive_ensure: attach one persistent, non-interactive
+# client to <session> when none is attached yet - idempotent, safe to call
+# before every task creation. Exists solely to work around the 0.45.0+
+# regression documented in this file's header ("Regression found"): without
+# ANY client attached, a newly created tab never gets a real terminal pane.
+# `zellij attach` needs a genuine pty to attach at all (verified: given
+# /dev/null stdin and no controlling terminal, it exits immediately with no
+# effect on the session), so this wraps it in `script`, which allocates one.
+# BSD and GNU `script` take the wrapped command differently - mirrors
+# bin/backends/herdr.sh's uname-gated stat-flag split for the same reason.
+fm_backend_zellij_keepalive_ensure() {  # <session>
+  local session=$1 i
+  fm_backend_zellij_keepalive_attached "$session" && return 0
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    ( nohup script -q /dev/null zellij attach "$session" </dev/null >/dev/null 2>&1 & ) || return 1
+  else
+    ( nohup script -qc "zellij attach $session" /dev/null </dev/null >/dev/null 2>&1 & ) || return 1
+  fi
+  for i in $(seq 1 20); do
+    fm_backend_zellij_keepalive_attached "$session" && return 0
+    sleep 0.5
+  done
+  echo "error: no client attached to zellij session '$session' within 10s; task creation would fail on zellij 0.45.0+" >&2
+  return 1
+}
+
 # fm_backend_zellij_container_ensure: the full spawn-time container-ensure
-# sequence (version gate, session). Echoes the session name (no second
-# "workspace" component - zellij has no such concept, unlike herdr).
+# sequence (version gate, session, keepalive client). Echoes the session name
+# (no second "workspace" component - zellij has no such concept, unlike
+# herdr).
 fm_backend_zellij_container_ensure() {
   local session
   fm_backend_zellij_version_check || return 1
   session=$(fm_backend_zellij_session)
   fm_backend_zellij_server_ensure "$session" || return 1
+  fm_backend_zellij_keepalive_ensure "$session" || return 1
   printf '%s' "$session"
 }
 

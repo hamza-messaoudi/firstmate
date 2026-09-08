@@ -12,6 +12,7 @@ Prerequisites:
 
 - Zellij 0.44 or newer.
 - `jq` for JSON responses.
+- `script` (BSD or GNU), used to keep a non-interactive client attached to the session; required for task creation to work at all on Zellij 0.45.0+ (see "Current operation and safety" below).
 - The universal harness and toolchain requirements in [`configuration.md`](configuration.md#toolchain).
 
 Select it with local `config/backend` containing `zellij`, `FM_BACKEND=zellij` for one launch, or an explicit request to Firstmate.
@@ -59,6 +60,10 @@ Metadata-routed operations also verify the owning tab's expected scoped or unamb
 An explicit raw `session:pane` target remains a pane-existence-only operator escape hatch.
 
 ## Current operation and safety
+
+Zellij 0.45.0's "Per-Client Tab Sizes" change means a tab's size comes only from clients currently viewing it, so a new tab created with no client attached at all never gets a real terminal pane - task creation would fail outright.
+`fm_backend_zellij_keepalive_ensure` (`bin/backends/zellij.sh`) works around this by keeping one non-interactive client attached to the session per home, spawned through `script` because `zellij attach` needs a real pty to attach at all; it is idempotent and self-healing if that client ever dies.
+The full finding and mechanism are in that function's own header comment.
 
 Zellij's CLI action commands return exit 0 even for missing sessions or panes.
 The adapter therefore verifies session, terminal pane, and expected title before an operation and validates JSON or integer response shapes afterward.
