@@ -954,14 +954,18 @@ The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch
 
 ## Zellij
 
-The current compatibility floor and latest verification are Zellij 0.44.0 with `jq` on macOS aarch64.
+The compatibility floor is Zellij 0.44.0; also re-verified against 0.45.1 with `jq` and `script` on macOS x86_64 (2026-09-08).
 All real tests use a uniquely named session and `tests/zellij-test-safety.sh`; they never touch a session named `firstmate` or call all-session deletion.
+
+0.45.0's "Per-Client Tab Sizes" change broke headless task creation outright: a new tab with zero attached clients never gets a real terminal pane.
+`fm_backend_zellij_keepalive_ensure` (`bin/backends/zellij.sh`) fixes this by keeping one non-interactive client attached per session; the full mechanism and its finding are in that script's header, not restated here.
+`tests/fm-backend-zellij-smoke.test.sh` exercises the fix end to end against whichever real zellij binary is on `PATH`.
 
 | Guarantee | Command shape | Result |
 | --- | --- | --- |
 | Headless session | `zellij attach -b <name>` without a TTY | Created a persistent background session and returned. |
 | Session list | `zellij list-sessions --short --no-formatting` | Returned one plain name per line without starting a session. |
-| Create tab | `zellij action new-tab --cwd <dir> --name <title>` | Returned a numeric tab id and focused the new tab when a client was attached. |
+| Create tab | `zellij action new-tab --cwd <dir> --name <title>` | Returned a numeric tab id and focused the new tab when a client was attached; on 0.45.0+, required `fm_backend_zellij_keepalive_ensure`'s attached client to get a real pane at all. |
 | Pane discovery | `zellij action list-panes --json` | Included terminal pane id, tab id, plugin flag, and top-level `pane_cwd`. |
 | Literal send | `zellij action paste --pane-id <id> -- <text>` | Left text unsubmitted. |
 | Keys | `send-keys --pane-id <id> Enter`, `Esc`, and one argument `Ctrl c` | All three shared operations worked. |
